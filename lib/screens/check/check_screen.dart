@@ -2,6 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 
 class CheckScreen extends StatefulWidget {
 	const CheckScreen({super.key});
@@ -12,9 +15,11 @@ class CheckScreen extends StatefulWidget {
 
 class _CheckScreenState extends State<CheckScreen> {
 	late final File _file;
+	late final File _correlFile;
 	List<Map<String, dynamic>> _data = [];
 	Map<String, dynamic>? _resultado;
 	bool _loading = true;
+	int _correlativo = 0;
 	final TextEditingController _codeController = TextEditingController();
 
 	@override
@@ -31,14 +36,35 @@ class _CheckScreenState extends State<CheckScreen> {
 
 	Future<void> _init() async {
 		_file = await _resolveFile();
+		_correlFile = await _resolveCorrelFile();
+
+		// Cargar datos de invitados
 		if (!await _file.exists()) {
 			final raw = await DefaultAssetBundle.of(context)
 					.loadString('lib/data/invitados.json');
 			await _file.writeAsString(raw);
 		}
 		final raw = await _file.readAsString();
+
+		// Cargar correlativo
+		if (!await _correlFile.exists() ||
+				(await _correlFile.readAsString()).trim().isEmpty) {
+			await _correlFile.writeAsString(jsonEncode({'correlativo': 0}));
+		}
+		final correlRaw = await _correlFile.readAsString();
+		int correlValue = 0;
+		try {
+			final correlData = jsonDecode(correlRaw) as Map<String, dynamic>;
+			correlValue = (correlData['correlativo'] ?? 0) as int;
+		} catch (e) {
+			debugPrint('correl.json corrupto, reiniciando a 0: $e');
+			correlValue = 0;
+			await _correlFile.writeAsString(jsonEncode({'correlativo': 0}));
+		}
+
 		setState(() {
 			_data = List<Map<String, dynamic>>.from(jsonDecode(raw));
+			_correlativo = correlValue;
 			_loading = false;
 		});
 	}
@@ -52,17 +78,48 @@ class _CheckScreenState extends State<CheckScreen> {
 		return File('$exeDir/invitados.json');
 	}
 
+	Future<File> _resolveCorrelFile() async {
+		if (kDebugMode) {
+			final f = File('lib/data/correl.json');
+			if (await f.exists()) return f;
+		}
+		final exeDir = File(Platform.resolvedExecutable).parent.path;
+		return File('$exeDir/correl.json');
+	}
+
 	Future<void> _save() async {
 		await _file.writeAsString(jsonEncode(_data));
 	}
 
+	Future<void> _saveCorrel() async {
+		final tmp = File('${_correlFile.path}.tmp');
+		await tmp.writeAsString(jsonEncode({'correlativo': _correlativo}));
+		await tmp.rename(_correlFile.path);
+	}
+
 	String _formatNombre(String s) => s.trim().toUpperCase();
+
+	/// Carga una fuente nativa de Windows desde C:\Windows\Fonts\
+	/// Si no existe (otro SO o ruta distinta), hace fallback a Helvetica.
+	Future<pw.Font> _cargarFuenteSistema(String nombreArchivo) async {
+		if (Platform.isWindows) {
+			final file = File('C:\\Windows\\Fonts\\$nombreArchivo');
+			if (await file.exists()) {
+				final bytes = await file.readAsBytes();
+				return pw.Font.ttf(bytes.buffer.asByteData());
+			}
+		}
+		// Fallback (solo ASCII, pero no rompe)
+		return pw.Font.helvetica();
+	}
 
 	void _buscar() {
 		final code = _codeController.text.trim();
 		if (code.isEmpty) return;
 		final found = _data.firstWhere(
-			(e) => (e['codigo'] ?? '').toString() == code,
+			(e) =>
+					(e['codigo'] ?? '').toString() == code ||
+					(e['DNI'] ?? '').toString() == code,
 			orElse: () => {},
 		);
 		setState(() => _resultado = found.isEmpty ? null : found);
@@ -72,11 +129,117 @@ class _CheckScreenState extends State<CheckScreen> {
 		if (_resultado == null) return;
 		final idx = _data.indexOf(_resultado!);
 		if (idx == -1) return;
+
+		final nombre = _formatNombre(_resultado!['nombre'] ?? '');
+		final dataParaImprimir = Map<String, dynamic>.from(_resultado!);
+
+		// Incrementar correlativo ANTES de imprimir
+		_correlativo++;
+		await _saveCorrel();
+
 		setState(() {
 			_data[idx]['acceso'] = 1;
-			_resultado = _data[idx];
 		});
 		await _save();
+
+		// Limpiar input y búsqueda
+		_codeController.clear();
+		setState(() => _resultado = null);
+
+		if (!mounted) return;
+
+		// Mostrar alerta flotante
+		_mostrarAlerta('Ingreso correcto: $nombre');
+
+		// Imprimir ticket
+		await _imprimirTicket(dataParaImprimir);
+	}
+
+	Future<void> _imprimirTicket(Map<String, dynamic> invitado) async {
+		try {
+			final doc = pw.Document();
+
+			// Cargar fuentes nativas de Windows (Arial en este caso)
+			final fontRegular = await _cargarFuenteSistema('arial.ttf');
+			final fontBold = await _cargarFuenteSistema('arialbd.ttf');
+
+			final nombre = _formatNombre(invitado['nombre'] ?? '');
+			final dni = (invitado['DNI'] ?? '').toString();
+			final nroTicket = _correlativo.toString().padLeft(4, '0');
+
+			doc.addPage(
+				pw.Page(
+					pageFormat: PdfPageFormat.a4,
+					theme: pw.ThemeData.withFont(
+						base: fontRegular,
+						bold: fontBold,
+					),
+					build: (pw.Context context) {
+						return pw.Center(
+							child: pw.Column(
+								mainAxisAlignment: pw.MainAxisAlignment.center,
+								children: [
+									pw.Text(
+										'Almuerzo de confraternidad',
+										style: pw.TextStyle(fontSize: 20),
+									),
+									pw.SizedBox(height: 8),
+									pw.Text(
+										'GERESA CUSCO',
+										style: pw.TextStyle(
+											fontSize: 24,
+											fontWeight: pw.FontWeight.bold,
+										),
+									),
+									pw.SizedBox(height: 40),
+									pw.Text(
+										nombre,
+										style: pw.TextStyle(fontSize: 22),
+									),
+									pw.SizedBox(height: 12),
+									pw.Text(
+										'DNI: $dni',
+										style: pw.TextStyle(fontSize: 18),
+									),
+									pw.SizedBox(height: 40),
+									pw.Text(
+										'Nro. Ticket: $nroTicket',
+										style: pw.TextStyle(
+											fontSize: 36,
+											fontWeight: pw.FontWeight.bold,
+										),
+									),
+								],
+							),
+						);
+					},
+				),
+			);
+
+			await Printing.layoutPdf(
+				onLayout: (PdfPageFormat format) async => doc.save(),
+				name: 'Ticket_$nroTicket',
+			);
+		} catch (e) {
+			debugPrint('Error al imprimir: $e');
+			if (mounted) {
+				_mostrarAlerta('Error al imprimir: $e');
+			}
+		}
+	}
+
+	void _mostrarAlerta(String mensaje) {
+		final overlay = Overlay.of(context);
+		late OverlayEntry entry;
+
+		entry = OverlayEntry(
+			builder: (context) => _AlertaIngreso(
+				mensaje: mensaje,
+				onDismiss: () => entry.remove(),
+			),
+		);
+
+		overlay.insert(entry);
 	}
 
 	@override
@@ -107,7 +270,7 @@ class _CheckScreenState extends State<CheckScreen> {
 												controller: _codeController,
 												style: const TextStyle(fontSize: 20),
 												decoration: const InputDecoration(
-													hintText: 'Código',
+													hintText: 'Código o DNI',
 													border: OutlineInputBorder(),
 													contentPadding: EdgeInsets.symmetric(
 														horizontal: 16,
@@ -144,8 +307,14 @@ class _CheckScreenState extends State<CheckScreen> {
 													_info('Código', _resultado!['codigo']),
 													_info('Teléfono', _resultado!['telefono']),
 													_info('DNI', _resultado!['DNI']),
-													_info('Pagado', (_resultado!['pagado'] ?? 0) == 1 ? 'Sí' : 'No'),
-													_info('Acceso', (_resultado!['acceso'] ?? 0) == 1 ? 'Sí' : 'No'),
+													_info(
+														'Pagado',
+														(_resultado!['pagado'] ?? 0) == 1 ? 'Sí' : 'No',
+													),
+													_info(
+														'Acceso',
+														(_resultado!['acceso'] ?? 0) == 1 ? 'Sí' : 'No',
+													),
 													_info('Observación', _resultado!['observacion']),
 												],
 											),
@@ -199,6 +368,103 @@ class _CheckScreenState extends State<CheckScreen> {
 						),
 					),
 				],
+			),
+		);
+	}
+}
+
+class _AlertaIngreso extends StatefulWidget {
+	final String mensaje;
+	final VoidCallback onDismiss;
+
+	const _AlertaIngreso({
+		required this.mensaje,
+		required this.onDismiss,
+	});
+
+	@override
+	State<_AlertaIngreso> createState() => _AlertaIngresoState();
+}
+
+class _AlertaIngresoState extends State<_AlertaIngreso>
+		with SingleTickerProviderStateMixin {
+	late final AnimationController _controller;
+	late final Animation<double> _fade;
+	late final Animation<Offset> _slide;
+
+	@override
+	void initState() {
+		super.initState();
+		_controller = AnimationController(
+			vsync: this,
+			duration: const Duration(milliseconds: 300),
+		);
+		_fade = CurvedAnimation(parent: _controller, curve: Curves.easeOut);
+		_slide = Tween<Offset>(
+			begin: const Offset(0, 0.3),
+			end: Offset.zero,
+		).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOut));
+
+		_controller.forward();
+
+		Future.delayed(const Duration(seconds: 2), () async {
+			if (!mounted) return;
+			await _controller.reverse();
+			if (mounted) widget.onDismiss();
+		});
+	}
+
+	@override
+	void dispose() {
+		_controller.dispose();
+		super.dispose();
+	}
+
+	@override
+	Widget build(BuildContext context) {
+		return Positioned(
+			right: 24,
+			bottom: 24,
+			child: Material(
+				color: Colors.transparent,
+				child: FadeTransition(
+					opacity: _fade,
+					child: SlideTransition(
+						position: _slide,
+						child: Container(
+							padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+							decoration: BoxDecoration(
+								color: Colors.green.shade700,
+								borderRadius: BorderRadius.circular(8),
+								boxShadow: [
+									BoxShadow(
+										color: Colors.black.withOpacity(0.2),
+										blurRadius: 8,
+										offset: const Offset(0, 4),
+									),
+								],
+							),
+							child: Row(
+								mainAxisSize: MainAxisSize.min,
+								children: [
+									const Icon(Icons.check_circle, color: Colors.white, size: 20),
+									const SizedBox(width: 8),
+									ConstrainedBox(
+										constraints: const BoxConstraints(maxWidth: 260),
+										child: Text(
+											widget.mensaje,
+											style: const TextStyle(
+												color: Colors.white,
+												fontSize: 14,
+												fontWeight: FontWeight.w500,
+											),
+										),
+									),
+								],
+							),
+						),
+					),
+				),
 			),
 		);
 	}
