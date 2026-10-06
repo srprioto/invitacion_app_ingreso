@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'raw_printer.dart';
 
 class CheckScreen extends StatefulWidget {
 	const CheckScreen({super.key});
@@ -20,9 +21,11 @@ class _CheckScreenState extends State<CheckScreen> {
 	bool _loading = true;
 	final TextEditingController _codeController = TextEditingController();
 
-	// ========== Configuración de impresora ZD230 ==========
-	static const String PRINTER_IP = '192.168.1.100'; // ← MODIFICAR
-	static const int PRINTER_PORT = 9100;
+	// ========== Impresora USB Zebra ZD230 ==========
+	// Si es null, se autodetecta. Si falla, pon aquí el nombre exacto
+	// que muestra Get-Printer, ej: 'ZDesigner ZD230-203dpi ZPL'
+	static const String? PRINTER_NAME = null;
+	String? _printerCache;
 
 	@override
 	void initState() {
@@ -142,7 +145,6 @@ class _CheckScreenState extends State<CheckScreen> {
 		final dataParaImprimir = Map<String, dynamic>.from(_resultado!);
 		final codigo = (_resultado!['codigo'] ?? '').toString();
 
-		// Incrementar correlativo
 		final nuevoCorrel = {
 			'correlativo': _ultimoCorrelativo + 1,
 			'codigo': codigo,
@@ -184,44 +186,44 @@ class _CheckScreenState extends State<CheckScreen> {
 		await _imprimirTicket(dataParaImprimir, nro);
 	}
 
-	/// ========== Imprimir ticket ZPL por Socket TCP directo ==========
+	Future<String> _nombreImpresora() async {
+		if (PRINTER_NAME != null) return PRINTER_NAME!;
+		if (_printerCache != null) return _printerCache!;
+		final detectada = await RawPrinter.detectarZebra();
+		if (detectada == null) {
+			throw Exception(
+					'No se encontró una impresora Zebra instalada en Windows. '
+					'Instala el driver ZDesigner o define PRINTER_NAME.');
+		}
+		_printerCache = detectada;
+		return detectada;
+	}
+
+	/// ========== Imprimir ticket ZPL (USB, modo RAW) ==========
 	Future<void> _imprimirTicket(Map<String, dynamic> invitado, int nroCorrel) async {
-		Socket? socket;
 		try {
 			final nombre = _formatNombre(invitado['nombre'] ?? '');
 			final dni = (invitado['DNI'] ?? '').toString();
 			final nroTicket = nroCorrel.toString().padLeft(4, '0');
 
-			// ZPL para Zebra ZD230 (ajustar ^PW y ^LL según el ancho real de la etiqueta)
-			final zpl = '''
-^XA
-^CI28
-^PW560
-^LL300
-^FO30,30^A0N,28,28^FDAlmuerzo de confraternidad^FS
-^FO30,70^A0N,32,32^FDGERESA CUSCO^FS
-^FO30,130^A0N,36,36^FD$nombre^FS
-^FO30,180^A0N,28,28^FDDNI: $dni^FS
-^FO30,220^A0N,48,48^FDNro. $nroTicket^FS
-^XZ
-''';
+			// Ajustar ^PW y ^LL según el tamaño real de la etiqueta
+			final zpl = '^XA\n'
+					'^CI28\n'
+					'^PW560\n'
+					'^LL300\n'
+					'^FO30,30^A0N,28,28^FDAlmuerzo de confraternidad^FS\n'
+					'^FO30,70^A0N,32,32^FDGERESA CUSCO^FS\n'
+					'^FO30,130^A0N,36,36^FD$nombre^FS\n'
+					'^FO30,180^A0N,28,28^FDDNI: $dni^FS\n'
+					'^FO30,220^A0N,48,48^FDNro. $nroTicket^FS\n'
+					'^XZ\n';
 
-			socket = await Socket.connect(
-				PRINTER_IP,
-				PRINTER_PORT,
-				timeout: const Duration(seconds: 5),
-			);
+			final printer = await _nombreImpresora();
+			RawPrinter.enviar(printer, zpl);
 
-			socket.write(zpl);
-			await socket.flush();
-			await socket.close();
-
-			debugPrint('Ticket impreso: $nroTicket');
+			debugPrint('Ticket impreso en "$printer": $nroTicket');
 		} catch (e) {
 			debugPrint('Error al imprimir: $e');
-			try {
-				await socket?.close();
-			} catch (_) {}
 			if (mounted) {
 				_mostrarAlerta('Error al imprimir: $e');
 			}
