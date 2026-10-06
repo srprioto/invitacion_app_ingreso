@@ -200,23 +200,39 @@ class _CheckScreenState extends State<CheckScreen> {
 	}
 
 	/// ========== Imprimir ticket ZPL (USB, modo RAW) ==========
+	/// ========== Imprimir ticket ZPL (USB, modo RAW) ==========
 	Future<void> _imprimirTicket(Map<String, dynamic> invitado, int nroCorrel) async {
 		try {
 			final nombre = _formatNombre(invitado['nombre'] ?? '');
 			final dni = (invitado['DNI'] ?? '').toString();
 			final nroTicket = nroCorrel.toString().padLeft(4, '0');
 
-			// Ajustar ^PW y ^LL según el tamaño real de la etiqueta
+			// Ancho de la etiqueta en dots (ajústalo a tu etiqueta real)
+			const int anchoEtiqueta = 560;
+
+			// ============================================================
+			// IMPRESION AQUI
+			// ============================================================
+			// ^LT20   -> desplaza todo 20 dots hacia abajo (padding superior)
+			// ^FB...  -> bloque de texto con ancho fijo y alineación centrada
+			//            Formato: ^FB<ancho>,<líneas>,<espacio>,<justificado>,<sangría>
+			//            El 1 al final de la línea (^FB560,1,0,C) indica centrado.
 			final zpl = '^XA\n'
-					'^CI28\n'
-					'^PW560\n'
-					'^LL300\n'
-					'^FO30,30^A0N,28,28^FDAlmuerzo de confraternidad^FS\n'
-					'^FO30,70^A0N,32,32^FDGERESA CUSCO^FS\n'
-					'^FO30,130^A0N,36,36^FD$nombre^FS\n'
-					'^FO30,180^A0N,28,28^FDDNI: $dni^FS\n'
-					'^FO30,220^A0N,48,48^FDNro. $nroTicket^FS\n'
-					'^XZ\n';
+				'^CI28\n'
+				'^PW$anchoEtiqueta\n'
+				'^LL320\n'
+				'^LT20\n' // 👈 padding superior de 20 dots
+				'^FO0,30^A0N,34,34^FB$anchoEtiqueta,1,0,C^FDAlmuerzo de confraternidad^FS\n'
+				'^FO0,75^A0N,44,44^FB$anchoEtiqueta,1,0,C^FDGERESA CUSCO^FS\n'
+				'^FO30,140^A0N,36,36^FD$nombre^FS\n'
+				'^FO30,190^A0N,28,28^FDDNI: $dni^FS\n'
+				'^FO30,230^A0N,48,48^FDNro. $nroTicket^FS\n'
+				// Línea transversal: 20 dots debajo del último texto
+				'^FO0,300^GB$anchoEtiqueta,2,2^FS\n'
+				'^XZ\n';
+			// ============================================================
+			// FIN IMPRESION
+			// ============================================================
 
 			final printer = await _nombreImpresora();
 			RawPrinter.enviar(printer, zpl);
