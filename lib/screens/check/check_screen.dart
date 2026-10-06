@@ -17,9 +17,10 @@ class _CheckScreenState extends State<CheckScreen> {
 	late final File _file;
 	late final File _correlFile;
 	List<Map<String, dynamic>> _data = [];
+	List<Map<String, dynamic>> _correlativos = [];
 	Map<String, dynamic>? _resultado;
+	Map<String, dynamic>? _correlExistente;
 	bool _loading = true;
-	int _correlativo = 0;
 	final TextEditingController _codeController = TextEditingController();
 
 	@override
@@ -38,7 +39,6 @@ class _CheckScreenState extends State<CheckScreen> {
 		_file = await _resolveFile();
 		_correlFile = await _resolveCorrelFile();
 
-		// Cargar datos de invitados
 		if (!await _file.exists()) {
 			final raw = await DefaultAssetBundle.of(context)
 					.loadString('lib/data/invitados.json');
@@ -46,25 +46,25 @@ class _CheckScreenState extends State<CheckScreen> {
 		}
 		final raw = await _file.readAsString();
 
-		// Cargar correlativo
 		if (!await _correlFile.exists() ||
 				(await _correlFile.readAsString()).trim().isEmpty) {
-			await _correlFile.writeAsString(jsonEncode({'correlativo': 0}));
+			await _correlFile.writeAsString('[]');
 		}
 		final correlRaw = await _correlFile.readAsString();
-		int correlValue = 0;
+		List<Map<String, dynamic>> correlList = [];
 		try {
-			final correlData = jsonDecode(correlRaw) as Map<String, dynamic>;
-			correlValue = (correlData['correlativo'] ?? 0) as int;
+			final decoded = jsonDecode(correlRaw);
+			if (decoded is List) {
+				correlList = List<Map<String, dynamic>>.from(decoded);
+			}
 		} catch (e) {
-			debugPrint('correl.json corrupto, reiniciando a 0: $e');
-			correlValue = 0;
-			await _correlFile.writeAsString(jsonEncode({'correlativo': 0}));
+			debugPrint('correl.json corrupto, reiniciando: $e');
+			await _correlFile.writeAsString('[]');
 		}
 
 		setState(() {
 			_data = List<Map<String, dynamic>>.from(jsonDecode(raw));
-			_correlativo = correlValue;
+			_correlativos = correlList;
 			_loading = false;
 		});
 	}
@@ -93,14 +93,19 @@ class _CheckScreenState extends State<CheckScreen> {
 
 	Future<void> _saveCorrel() async {
 		final tmp = File('${_correlFile.path}.tmp');
-		await tmp.writeAsString(jsonEncode({'correlativo': _correlativo}));
+		await tmp.writeAsString(jsonEncode(_correlativos));
 		await tmp.rename(_correlFile.path);
 	}
 
 	String _formatNombre(String s) => s.trim().toUpperCase();
 
-	/// Carga una fuente nativa de Windows desde C:\Windows\Fonts\
-	/// Si no existe (otro SO o ruta distinta), hace fallback a Helvetica.
+	int get _ultimoCorrelativo {
+		if (_correlativos.isEmpty) return 0;
+		return _correlativos
+				.map((e) => (e['correlativo'] ?? 0) as int)
+				.reduce((a, b) => a > b ? a : b);
+	}
+
 	Future<pw.Font> _cargarFuenteSistema(String nombreArchivo) async {
 		if (Platform.isWindows) {
 			final file = File('C:\\Windows\\Fonts\\$nombreArchivo');
@@ -109,20 +114,34 @@ class _CheckScreenState extends State<CheckScreen> {
 				return pw.Font.ttf(bytes.buffer.asByteData());
 			}
 		}
-		// Fallback (solo ASCII, pero no rompe)
 		return pw.Font.helvetica();
 	}
 
 	void _buscar() {
 		final code = _codeController.text.trim();
 		if (code.isEmpty) return;
+
 		final found = _data.firstWhere(
 			(e) =>
 					(e['codigo'] ?? '').toString() == code ||
 					(e['DNI'] ?? '').toString() == code,
 			orElse: () => {},
 		);
-		setState(() => _resultado = found.isEmpty ? null : found);
+
+		Map<String, dynamic>? correlFound;
+		if (found.isNotEmpty) {
+			final codigo = (found['codigo'] ?? '').toString();
+			correlFound = _correlativos.firstWhere(
+				(e) => (e['codigo'] ?? '').toString() == codigo,
+				orElse: () => {},
+			);
+			if (correlFound.isEmpty) correlFound = null;
+		}
+
+		setState(() {
+			_resultado = found.isEmpty ? null : found;
+			_correlExistente = correlFound;
+		});
 	}
 
 	Future<void> _ingresar() async {
@@ -130,11 +149,16 @@ class _CheckScreenState extends State<CheckScreen> {
 		final idx = _data.indexOf(_resultado!);
 		if (idx == -1) return;
 
-		final nombre = _formatNombre(_resultado!['nombre'] ?? '');
 		final dataParaImprimir = Map<String, dynamic>.from(_resultado!);
+		final codigo = (_resultado!['codigo'] ?? '').toString();
 
-		// Incrementar correlativo ANTES de imprimir
-		_correlativo++;
+		// Incrementar correlativo
+		final nuevoCorrel = {
+			'correlativo': _ultimoCorrelativo + 1,
+			'codigo': codigo,
+			'DNI': (_resultado!['DNI'] ?? '').toString(),
+		};
+		_correlativos.add(nuevoCorrel);
 		await _saveCorrel();
 
 		setState(() {
@@ -142,30 +166,43 @@ class _CheckScreenState extends State<CheckScreen> {
 		});
 		await _save();
 
-		// Limpiar input y búsqueda
+		final nombre = _formatNombre(_resultado!['nombre'] ?? '');
 		_codeController.clear();
-		setState(() => _resultado = null);
+		setState(() {
+			_resultado = null;
+			_correlExistente = null;
+		});
 
 		if (!mounted) return;
-
-		// Mostrar alerta flotante
 		_mostrarAlerta('Ingreso correcto: $nombre');
-
-		// Imprimir ticket
-		await _imprimirTicket(dataParaImprimir);
+		await _imprimirTicket(dataParaImprimir, nuevoCorrel['correlativo'] as int);
 	}
 
-	Future<void> _imprimirTicket(Map<String, dynamic> invitado) async {
+	Future<void> _reimprimir() async {
+		if (_resultado == null || _correlExistente == null) return;
+		final dataParaImprimir = Map<String, dynamic>.from(_resultado!);
+		final nro = _correlExistente!['correlativo'] ?? 0;
+
+		_codeController.clear();
+		setState(() {
+			_resultado = null;
+			_correlExistente = null;
+		});
+
+		if (!mounted) return;
+		_mostrarAlerta('Reimprimiendo ticket Nro. ${nro.toString().padLeft(4, '0')}');
+		await _imprimirTicket(dataParaImprimir, nro);
+	}
+
+	Future<void> _imprimirTicket(Map<String, dynamic> invitado, int nroCorrel) async {
 		try {
 			final doc = pw.Document();
-
-			// Cargar fuentes nativas de Windows (Arial en este caso)
 			final fontRegular = await _cargarFuenteSistema('arial.ttf');
 			final fontBold = await _cargarFuenteSistema('arialbd.ttf');
 
 			final nombre = _formatNombre(invitado['nombre'] ?? '');
 			final dni = (invitado['DNI'] ?? '').toString();
-			final nroTicket = _correlativo.toString().padLeft(4, '0');
+			final nroTicket = nroCorrel.toString().padLeft(4, '0');
 
 			doc.addPage(
 				pw.Page(
@@ -330,6 +367,20 @@ class _CheckScreenState extends State<CheckScreen> {
 										),
 									),
 								const SizedBox(height: 16),
+								if (_correlExistente != null)
+									SizedBox(
+										width: double.infinity,
+										height: 60,
+										child: ElevatedButton.icon(
+											onPressed: _reimprimir,
+											icon: const Icon(Icons.print),
+											label: Text(
+												'Reimprimir Ticket Nro. ${(_correlExistente!['correlativo'] ?? 0).toString().padLeft(4, '0')}',
+												style: const TextStyle(fontSize: 18),
+											),
+										),
+									),
+								if (_correlExistente != null) const SizedBox(height: 12),
 								SizedBox(
 									width: double.infinity,
 									height: 60,

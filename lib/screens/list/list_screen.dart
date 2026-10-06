@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -90,6 +91,16 @@ class _ListScreenState extends State<ListScreen> {
 		return s.trim().toUpperCase();
 	}
 
+	String _generarCodigo() {
+		const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+		final rnd = Random.secure();
+		String code;
+		do {
+			code = List.generate(6, (_) => chars[rnd.nextInt(chars.length)]).join();
+		} while (_data.any((e) => e['codigo'] == code));
+		return code;
+	}
+
 	Future<void> _toggleEdit(int i) async {
 		if (_editing.contains(i)) {
 			await _save();
@@ -97,6 +108,89 @@ class _ListScreenState extends State<ListScreen> {
 		} else {
 			setState(() => _editing.add(i));
 		}
+	}
+
+	Future<void> _nuevoRegistro() async {
+		final nombreCtrl = TextEditingController();
+		final telefonoCtrl = TextEditingController();
+		final dniCtrl = TextEditingController();
+		final observacionCtrl = TextEditingController();
+		bool acceso = false;
+		bool pagado = false;
+
+		final result = await showDialog<bool>(
+			context: context,
+			builder: (ctx) {
+				return StatefulBuilder(
+					builder: (ctx, setDialogState) {
+						return AlertDialog(
+							title: const Text('Nuevo invitado'),
+							content: SingleChildScrollView(
+								child: Column(
+									mainAxisSize: MainAxisSize.min,
+									children: [
+										TextField(
+											controller: nombreCtrl,
+											decoration: const InputDecoration(labelText: 'Nombre'),
+										),
+										TextField(
+											controller: telefonoCtrl,
+											decoration: const InputDecoration(labelText: 'Teléfono'),
+										),
+										TextField(
+											controller: dniCtrl,
+											decoration: const InputDecoration(labelText: 'DNI'),
+										),
+										TextField(
+											controller: observacionCtrl,
+											decoration: const InputDecoration(labelText: 'Observación'),
+										),
+										const SizedBox(height: 8),
+										SwitchListTile(
+											title: const Text('Acceso'),
+											value: acceso,
+											onChanged: (v) => setDialogState(() => acceso = v),
+										),
+										SwitchListTile(
+											title: const Text('Pagado'),
+											value: pagado,
+											onChanged: (v) => setDialogState(() => pagado = v),
+										),
+									],
+								),
+							),
+							actions: [
+								TextButton(
+									onPressed: () => Navigator.pop(ctx, false),
+									child: const Text('Cancelar'),
+								),
+								ElevatedButton(
+									onPressed: () => Navigator.pop(ctx, true),
+									child: const Text('Guardar'),
+								),
+							],
+						);
+					},
+				);
+			},
+		);
+
+		if (result != true) return;
+
+		final codigo = _generarCodigo();
+		final nuevo = {
+			'codigo': codigo,
+			'nombre': nombreCtrl.text.trim(),
+			'telefono': telefonoCtrl.text.trim(),
+			'enlace': 'https://invitacion-aniv.onrender.com/$codigo',
+			'DNI': dniCtrl.text.trim(),
+			'acceso': acceso ? 1 : 0,
+			'pagado': pagado ? 1 : 0,
+			'observacion': observacionCtrl.text.trim(),
+		};
+
+		setState(() => _data.add(nuevo));
+		await _save();
 	}
 
 	List<Map<String, dynamic>> get _filteredData {
@@ -142,6 +236,12 @@ class _ListScreenState extends State<ListScreen> {
 											isDense: true,
 										),
 									),
+								),
+								const SizedBox(width: 8),
+								IconButton(
+									icon: const Icon(Icons.add),
+									tooltip: 'Nuevo invitado',
+									onPressed: _nuevoRegistro,
 								),
 								const SizedBox(width: 8),
 								IconButton(
