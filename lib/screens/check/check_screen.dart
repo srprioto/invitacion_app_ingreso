@@ -2,9 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:pdf/pdf.dart';
-import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart';
 
 class CheckScreen extends StatefulWidget {
 	const CheckScreen({super.key});
@@ -22,6 +19,10 @@ class _CheckScreenState extends State<CheckScreen> {
 	Map<String, dynamic>? _correlExistente;
 	bool _loading = true;
 	final TextEditingController _codeController = TextEditingController();
+
+	// ========== Configuración de impresora ZD230 ==========
+	static const String PRINTER_IP = '192.168.1.100'; // ← MODIFICAR
+	static const int PRINTER_PORT = 9100;
 
 	@override
 	void initState() {
@@ -106,17 +107,6 @@ class _CheckScreenState extends State<CheckScreen> {
 				.reduce((a, b) => a > b ? a : b);
 	}
 
-	Future<pw.Font> _cargarFuenteSistema(String nombreArchivo) async {
-		if (Platform.isWindows) {
-			final file = File('C:\\Windows\\Fonts\\$nombreArchivo');
-			if (await file.exists()) {
-				final bytes = await file.readAsBytes();
-				return pw.Font.ttf(bytes.buffer.asByteData());
-			}
-		}
-		return pw.Font.helvetica();
-	}
-
 	void _buscar() {
 		final code = _codeController.text.trim();
 		if (code.isEmpty) return;
@@ -194,71 +184,44 @@ class _CheckScreenState extends State<CheckScreen> {
 		await _imprimirTicket(dataParaImprimir, nro);
 	}
 
+	/// ========== Imprimir ticket ZPL por Socket TCP directo ==========
 	Future<void> _imprimirTicket(Map<String, dynamic> invitado, int nroCorrel) async {
+		Socket? socket;
 		try {
-			final doc = pw.Document();
-			final fontRegular = await _cargarFuenteSistema('arial.ttf');
-			final fontBold = await _cargarFuenteSistema('arialbd.ttf');
-
 			final nombre = _formatNombre(invitado['nombre'] ?? '');
 			final dni = (invitado['DNI'] ?? '').toString();
 			final nroTicket = nroCorrel.toString().padLeft(4, '0');
 
-			doc.addPage(
-				pw.Page(
-					pageFormat: PdfPageFormat.a4,
-					theme: pw.ThemeData.withFont(
-						base: fontRegular,
-						bold: fontBold,
-					),
-					build: (pw.Context context) {
-						return pw.Center(
-							child: pw.Column(
-								mainAxisAlignment: pw.MainAxisAlignment.center,
-								children: [
-									pw.Text(
-										'Almuerzo de confraternidad',
-										style: pw.TextStyle(fontSize: 20),
-									),
-									pw.SizedBox(height: 8),
-									pw.Text(
-										'GERESA CUSCO',
-										style: pw.TextStyle(
-											fontSize: 24,
-											fontWeight: pw.FontWeight.bold,
-										),
-									),
-									pw.SizedBox(height: 40),
-									pw.Text(
-										nombre,
-										style: pw.TextStyle(fontSize: 22),
-									),
-									pw.SizedBox(height: 12),
-									pw.Text(
-										'DNI: $dni',
-										style: pw.TextStyle(fontSize: 18),
-									),
-									pw.SizedBox(height: 40),
-									pw.Text(
-										'Nro. Ticket: $nroTicket',
-										style: pw.TextStyle(
-											fontSize: 36,
-											fontWeight: pw.FontWeight.bold,
-										),
-									),
-								],
-							),
-						);
-					},
-				),
+			// ZPL para Zebra ZD230 (ajustar ^PW y ^LL según el ancho real de la etiqueta)
+			final zpl = '''
+^XA
+^CI28
+^PW560
+^LL300
+^FO30,30^A0N,28,28^FDAlmuerzo de confraternidad^FS
+^FO30,70^A0N,32,32^FDGERESA CUSCO^FS
+^FO30,130^A0N,36,36^FD$nombre^FS
+^FO30,180^A0N,28,28^FDDNI: $dni^FS
+^FO30,220^A0N,48,48^FDNro. $nroTicket^FS
+^XZ
+''';
+
+			socket = await Socket.connect(
+				PRINTER_IP,
+				PRINTER_PORT,
+				timeout: const Duration(seconds: 5),
 			);
 
-			await Printing.layoutPdf(
-				onLayout: (PdfPageFormat format) async => doc.save(),
-				name: 'Ticket_$nroTicket',
-			);
+			socket.write(zpl);
+			await socket.flush();
+			await socket.close();
+
+			debugPrint('Ticket impreso: $nroTicket');
 		} catch (e) {
 			debugPrint('Error al imprimir: $e');
+			try {
+				await socket?.close();
+			} catch (_) {}
 			if (mounted) {
 				_mostrarAlerta('Error al imprimir: $e');
 			}

@@ -12,6 +12,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   file_picker: ^13.1.0
   printing: ^5.15.1
+  zsdk: ^5.0.0
 
 dev_dependencies:
   flutter_test:

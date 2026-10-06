@@ -461,6 +461,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "7.0.1"
+  zsdk:
+    dependency: "direct main"
+    description:
+      name: zsdk
+      sha256: "511dbb0720ff181bfa1e21548ff9b7d03f102c59b392a16c016ddae7e01375f0"
+      url: "https://pub.dev"
+    source: hosted
+    version: "5.0.0"
 sdks:
   dart: ">=3.12.2 <4.0.0"
   flutter: ">=3.41.0"
